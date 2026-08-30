@@ -1,0 +1,137 @@
+// Skema database panel admin WhatsApp.
+//
+// PINDAH KE MySQL / PostgreSQL:
+//   ganti `provider` di blok datasource di bawah menjadi "mysql" atau "postgresql",
+//   ubah DATABASE_URL di file .env, lalu jalankan `npx prisma db push`.
+//   Tidak ada perubahan lain yang diperlukan di kode aplikasi.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Pengguna panel
+// ---------------------------------------------------------------------------
+
+model User {
+  id           Int       @id @default(autoincrement())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         String    @default("AGENT") // ADMIN | AGENT
+  active       Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  assignedContacts Contact[] @relation("AssignedAgent")
+  sentMessages     Message[] @relation("SentBy")
+}
+
+// ---------------------------------------------------------------------------
+// Kontak (pelanggan) dan pesan
+// ---------------------------------------------------------------------------
+
+model Contact {
+  id            Int       @id @default(autoincrement())
+  waId          String    @unique // contoh: 6281234567890
+  name          String? // nama yang diisi admin
+  pushName      String? // nama yang dipakai kontak di WhatsApp
+  phone         String?
+  botEnabled    Boolean   @default(true) // matikan auto-response untuk 1 chat ini saja
+  unreadCount   Int       @default(0)
+  lastMessageAt DateTime?
+  lastOutsideAt DateTime? // kapan terakhir dikirimi pesan "di luar jam kerja"
+  firstSeenAt   DateTime  @default(now())
+  notes         String?
+  assignedToId  Int?
+  assignedTo    User?     @relation("AssignedAgent", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  messages Message[]
+  ruleHits RuleHit[]
+
+  @@index([lastMessageAt])
+}
+
+model Message {
+  id          Int      @id @default(autoincrement())
+  contactId   Int
+  contact     Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  waMessageId String? // id pesan dari WhatsApp, untuk update status
+  direction   String // IN | OUT
+  type        String   @default("text") // text | image | document | audio | video | sticker
+  body        String   @default("")
+  mediaUrl    String?
+  status      String   @default("sent") // sent | delivered | read | failed | received
+  isAuto      Boolean  @default(false) // true kalau dikirim oleh auto-response
+  ruleId      Int? // aturan mana yang memicu balasan ini
+  sentById    Int?
+  sentBy      User?    @relation("SentBy", fields: [sentById], references: [id], onDelete: SetNull)
+  errorText   String?
+  timestamp   DateTime @default(now())
+
+  @@index([contactId, timestamp])
+  @@index([waMessageId])
+}
+
+// ---------------------------------------------------------------------------
+// Auto-response
+// ---------------------------------------------------------------------------
+
+model AutoRule {
+  id       Int     @id @default(autoincrement())
+  name     String
+  enabled  Boolean @default(true)
+  priority Int     @default(100) // angka kecil = diperiksa lebih dulu
+
+  // Pemicu
+  matchType     String  @default("CONTAINS") // CONTAINS | EXACT | STARTS_WITH | REGEX | FIRST_MESSAGE | FALLBACK
+  keywords      String  @default("") // dipisah koma, contoh: harga,price,berapa
+  caseSensitive Boolean @default(false)
+
+  // Balasan
+  replyText String
+
+  // Jam aktif (kosong = berlaku 24 jam)
+  days      String  @default("1,2,3,4,5,6,7") // 1=Senin ... 7=Minggu
+  startTime String? // "08:00"
+  endTime   String? // "17:00"
+  timezone  String  @default("Asia/Jakarta")
+
+  // Pembatas
+  cooldownSeconds Int @default(300) // jangan balas aturan yang sama ke kontak yang sama sebelum lewat sekian detik
+  maxPerContact   Int @default(0) // 0 = tanpa batas
+
+  hitCount  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  hits RuleHit[]
+
+  @@index([enabled, priority])
+}
+
+model RuleHit {
+  id        Int      @id @default(autoincrement())
+  ruleId    Int
+  rule      AutoRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  contactId Int
+  contact   Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  firedAt   DateTime @default(now())
+
+  @@index([ruleId, contactId, firedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Pengaturan global (key/value, gampang ditambah tanpa migrasi)
+// ---------------------------------------------------------------------------
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @default(now()) @updatedAt
+}
